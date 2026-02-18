@@ -20,8 +20,8 @@ def load_vector_store(path):
     return FAISS.load_local(path, embeddings, allow_dangerous_deserialization=True)
 
 
-if __name__ == "__main__":
-    chunks = run_ingestion()
-    vectorstore = create_vector_store(chunks)
-    save_vector_store(vectorstore)
+# if __name__ == "__main__":
+#     chunks = run_ingestion()
+#     vectorstore = create_vector_store(chunks)
+#     save_vector_store(vectorstore)
 
