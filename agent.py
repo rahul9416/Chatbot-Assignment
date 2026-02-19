@@ -1,9 +1,9 @@
 from langchain_groq import ChatGroq
-from langchain.agents import create_agent
 from langchain_core.tools import tool
-from config import GROQ_API_KEY, LLM_MODEL, VECTOR_STORE_PATH, TOP_K
+from langchain_core.messages import HumanMessage
+from config import GROQ_API_KEY, LLM_MODEL
 from tools.pricing_estimator import estimate_price
-from embeddings import load_vector_store
+from rag_pipeline import ask
 
 @tool
 def pricing_tool(project_type: str, duration: str, complexity: str = "medium") -> dict:
@@ -22,55 +22,37 @@ def pricing_tool(project_type: str, duration: str, complexity: str = "medium") -
         return {"error": f"Pricing estimation failed: {str(e)}"}
 
 
-def create_custom_agent():
-    try:
-        llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY)
-        tools = [pricing_tool]
-
-        system_prompt = (
-            "You are a helpful assistant for Techculture, a technology services company. "
-            "Use the provided context to answer questions. Always cite sources. "
-            "If the user asks about pricing/cost, use the pricing_tool. "
-            "If the context doesn't have the answer, say so honestly.\n\n"
-            "Context:\n{context}"
-        )
-
-        agent = create_agent(llm, tools, system_prompt=system_prompt)
-        return agent
-    except Exception as e:
-        raise RuntimeError(f"Failed to create agent: {str(e)}") from e
-
-
 def run_agent(query: str) -> str:
-    """Run the agent with the given user query and return the response.
-    
+    """Agentic orchestrator: the LLM autonomously decides whether to call
+    the pricing tool, then the RAG pipeline generates the final answer.
+
+    Flow:
+        1. LLM with bound tools sees the query and decides if a tool is needed
+        2. If yes → execute the tool → pass tool output to RAG pipeline
+        3. If no  → call RAG pipeline directly
+        4. RAG pipeline always handles: retrieve → format context → generate answer
+
     Args:
         query: The user's question.
-        
+
     Returns:
         The agent's response as a string.
     """
+    tool_output = None
     try:
-        vector_store = load_vector_store(VECTOR_STORE_PATH)
+        llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY)
+        llm_with_tools = llm.bind_tools([pricing_tool])
+
+        response = llm_with_tools.invoke([HumanMessage(content=query)])
+
+        if response.tool_calls:
+            tool_call = response.tool_calls[0]
+            tool_output = pricing_tool.invoke(tool_call["args"])
     except Exception as e:
-        return f"Error loading vector store: {str(e)}"
-
-    try:
-        relevant_chunks = vector_store.similarity_search(query, k=TOP_K)
-    except Exception as e:
-        return f"Error during similarity search: {str(e)}"
-
-    context = ""
-    for chunk in relevant_chunks:
-        source = chunk.metadata.get("source", "unknown")
-        context += f"[Source: {source}]\n{chunk.page_content}\n\n"
-
-    user_message = f"Context:\n{context}\n\nQuestion: {query}"
+        tool_output = {"error": f"Tool decision/execution failed: {str(e)}"}
 
     try:
-        agent_executor = create_custom_agent()
-        result = agent_executor.invoke({"messages": [("user", user_message)]})
-        return result["messages"][-1].content
+        answer = ask(query, tool_output=tool_output)
+        return answer
     except Exception as e:
-        return f"Error during agent execution: {str(e)}"
-
+        return f"Error: {str(e)}"
